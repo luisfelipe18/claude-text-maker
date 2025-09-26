@@ -68,6 +68,7 @@ if 'processing_rewrite' not in st.session_state:
 if 'last_error' not in st.session_state:
     st.session_state['last_error'] = None
 
+
 # Configuración de credenciales de AWS
 def get_aws_clients():
     """Configura y retorna los clientes de AWS necesarios"""
@@ -99,9 +100,11 @@ def get_aws_clients():
         st.error(f"Error al configurar los clientes de AWS: {str(e)}")
         return None, None
 
+
 def on_modify_text_click():
     st.session_state['show_rewrite'] = True
     st.session_state['processing_rewrite'] = True
+
 
 # Configuración de Anthropic (Claude)
 def get_anthropic_client():
@@ -268,17 +271,18 @@ def rewrite_text_with_claude(text):
 
             try:
                 message = anthropic.messages.create(
-                    model="claude-3-sonnet-20240229",
+                    model="claude-sonnet-4-20250514",
                     max_tokens=4000,
                     temperature=0.7,
                     system="Tu tarea es reescribir texto manteniendo el significado exacto. No debes agregar ni quitar información.",
                     messages=[{
                         "role": "user",
                         "content": (
-                            "Reescribe cada oracion del siguiente texto con otras palabras, "
-                            "manteniendo el significado, mensaje y no alterando la informacion presentada. "
-                            "usa entre 650 y 700 palabras. "
-                            "Responde unicamente con el texto reescrito siguiendo las indicaciones.\n\n"
+                            "Reescribe el texto presentado, parrafo por parrafo manteniendo la misma cantidad de palabras aproximadamente. "
+                            "Reescribiras las oraciones manteniendo el mensaje pero sin agregar informacion que no esta presente."
+                            "Es imperativo que no reutilices oraciones del texto original. Escribe nuevamente el guion con otras palabras"
+                            "Mantendras aproximadamente la misma cantidad de palabras, como minimo 650 y no modificaras los Nombres, Lugares, fechas, etc."
+                            "Responde unicamente con el texto reescrito siguiendo las indicaciones. No repitas las palabras del texto original\n\n"
                             f"{chunk}"
                         )
                     }]
@@ -318,6 +322,7 @@ def rewrite_text_with_claude(text):
         st.error(f"Error general al procesar con Claude: {str(e)}")
         return None
 
+
 def display_status_message(message, type="info"):
     """Muestra mensajes de estado con formato"""
     if type == "info":
@@ -330,189 +335,224 @@ def display_status_message(message, type="info"):
         st.warning(message)
 
 
+def check_password():
+    """Returns `True` if the user had the correct password."""
+
+    def password_entered():
+        """Checks whether a password entered by the user is correct."""
+        if st.session_state["password"] == st.secrets['WEB_PASSWORD'].strip():
+            st.session_state["password_correct"] = True
+            del st.session_state["password"]  # No guardar la contraseña
+        else:
+            st.session_state["password_correct"] = False
+
+    # Si el "password_correct" no existe, entonces mostrar el input
+    if "password_correct" not in st.session_state:
+        # Primera ejecución, mostrar input
+        st.text_input(
+            "Contraseña", type="password", on_change=password_entered, key="password"
+        )
+        return False
+
+    # Contraseña fue ingresada y es correcta
+    elif not st.session_state["password_correct"]:
+        # Contraseña incorrecta, mostrar input + mensaje de error
+        st.text_input(
+            "Contraseña", type="password", on_change=password_entered, key="password"
+        )
+        st.error("😕 Contraseña incorrecta")
+        return False
+    else:
+        # Contraseña correcta
+        return True
+
+
 # Interfaz principal de Streamlit
-st.title("📹 Procesador de Videos y Transcripciones")
-st.markdown("---")
 
-# Área de carga de video
-st.subheader("1. Selección y Carga de Video")
-video_file = st.file_uploader(
-    "Selecciona un video MP4",
-    type=['mp4'],
-    help="Solo se aceptan archivos en formato MP4"
-)
+if check_password():
 
-if video_file:
+    st.title("📹 Procesador de Videos y Transcripciones")
+    st.markdown("---")
 
-    video_s3_uri, video_url = check_file_exists_in_s3(video_file.name)
+    # Área de carga de video
+    st.subheader("1. Selección y Carga de Video")
+    video_file = st.file_uploader(
+        "Selecciona un video MP4",
+        type=['mp4'],
+        help="Solo se aceptan archivos en formato MP4"
+    )
 
-    if video_s3_uri:
-        st.info("Este archivo ya existe en S3. Usando la versión existente.")
-        st.session_state['video_url'] = video_url
-        st.session_state['video_s3_uri'] = video_s3_uri
+    if video_file:
 
-    col1, col2 = st.columns(2)
+        video_s3_uri, video_url = check_file_exists_in_s3(video_file.name)
 
-    with col1:
-        if st.button("🚀 Iniciar Procesamiento", key="start_processing"):
-            st.session_state['processing_failed'] = False
+        if video_s3_uri:
+            st.info("Este archivo ya existe en S3. Usando la versión existente.")
+            st.session_state['video_url'] = video_url
+            st.session_state['video_s3_uri'] = video_s3_uri
 
-            # Si el archivo no existe en S3, subirlo
-            if not video_s3_uri:
-                with st.spinner("Subiendo video a AWS..."):
-                    video_s3_uri, video_url = upload_to_s3(video_file)
-                    if video_s3_uri:
-                        st.session_state['video_url'] = video_url
-                        st.session_state['video_s3_uri'] = video_s3_uri
-                        display_status_message("✅ Video subido exitosamente", "success")
+        col1, col2 = st.columns(2)
 
-            # Iniciar transcripción
-            with st.spinner("Iniciando transcripción..."):
-                job_name = start_transcription_job(st.session_state['video_s3_uri'])
-                if job_name:
-                    st.session_state['job_name'] = job_name
-                    display_status_message(
-                        "🎯 Transcripción iniciada. Usa el botón 'Verificar Estado' para ver el progreso.",
-                        "success"
-                    )
-                else:
-                    st.session_state['processing_failed'] = True
-                    display_status_message(
-                        "❌ Error al iniciar la transcripción. Puedes intentar nuevamente sin necesidad de volver a subir el video.",
-                        "error"
-                    )
+        with col1:
+            if st.button("🚀 Iniciar Procesamiento", key="start_processing"):
+                st.session_state['processing_failed'] = False
 
-    with col2:
-        # Botón de reintento que aparece solo si hubo un error y el video ya está en S3
-        if st.session_state['processing_failed'] and st.session_state['video_s3_uri']:
-            if st.button("🔄 Reintentar Transcripción", key="retry_processing"):
-                with st.spinner("Reiniciando transcripción..."):
+                # Si el archivo no existe en S3, subirlo
+                if not video_s3_uri:
+                    with st.spinner("Subiendo video a AWS..."):
+                        video_s3_uri, video_url = upload_to_s3(video_file)
+                        if video_s3_uri:
+                            st.session_state['video_url'] = video_url
+                            st.session_state['video_s3_uri'] = video_s3_uri
+                            display_status_message("✅ Video subido exitosamente", "success")
+
+                # Iniciar transcripción
+                with st.spinner("Iniciando transcripción..."):
                     job_name = start_transcription_job(st.session_state['video_s3_uri'])
                     if job_name:
                         st.session_state['job_name'] = job_name
-                        st.session_state['processing_failed'] = False
                         display_status_message(
-                            "🎯 Transcripción reiniciada. Usa el botón 'Verificar Estado' para ver el progreso.",
+                            "🎯 Transcripción iniciada. Usa el botón 'Verificar Estado' para ver el progreso.",
                             "success"
                         )
+                    else:
+                        st.session_state['processing_failed'] = True
+                        display_status_message(
+                            "❌ Error al iniciar la transcripción. Puedes intentar nuevamente sin necesidad de volver a subir el video.",
+                            "error"
+                        )
 
-# Área de estado y resultados
-if st.button("🔄 Verificar Estado"):
-    job_info = get_transcription_status(st.session_state['job_name'])
+        with col2:
+            # Botón de reintento que aparece solo si hubo un error y el video ya está en S3
+            if st.session_state['processing_failed'] and st.session_state['video_s3_uri']:
+                if st.button("🔄 Reintentar Transcripción", key="retry_processing"):
+                    with st.spinner("Reiniciando transcripción..."):
+                        job_name = start_transcription_job(st.session_state['video_s3_uri'])
+                        if job_name:
+                            st.session_state['job_name'] = job_name
+                            st.session_state['processing_failed'] = False
+                            display_status_message(
+                                "🎯 Transcripción reiniciada. Usa el botón 'Verificar Estado' para ver el progreso.",
+                                "success"
+                            )
 
-    if job_info:
-        status = job_info['TranscriptionJobStatus']
+    # Área de estado y resultados
+    if st.button("🔄 Verificar Estado"):
+        job_info = get_transcription_status(st.session_state['job_name'])
 
-        if status == 'COMPLETED':
-            transcript_uri = job_info['Transcript']['TranscriptFileUri']
-            transcription = get_transcription_text(transcript_uri)
+        if job_info:
+            status = job_info['TranscriptionJobStatus']
 
-            if transcription:
-                st.session_state['transcription'] = transcription
+            if status == 'COMPLETED':
+                transcript_uri = job_info['Transcript']['TranscriptFileUri']
+                transcription = get_transcription_text(transcript_uri)
 
-                # Mostrar resultados en dos columnas
-                col1, col2 = st.columns(2)
+                if transcription:
+                    st.session_state['transcription'] = transcription
 
-                with col1:
-                    st.subheader("Video Original")
-                    st.video(st.session_state['video_url'])
+                    # Mostrar resultados en dos columnas
+                    col1, col2 = st.columns(2)
 
-                with col2:
-                    st.subheader("Transcripción")
-                    st.text_area(
-                        "Texto transcrito",
-                        transcription,
-                        height=300,
-                        key="transcription_area"
-                    )
+                    with col1:
+                        st.subheader("Video Original")
+                        st.video(st.session_state['video_url'])
 
-                    st.download_button(
-                        label="📥 Descargar Transcripción",
-                        data=transcription,
-                        file_name="transcripcion.txt",
-                        mime="text/plain",
-                        key="download_transcription"
-                    )
+                    with col2:
+                        st.subheader("Transcripción")
+                        st.text_area(
+                            "Texto transcrito",
+                            transcription,
+                            height=300,
+                            key="transcription_area"
+                        )
 
-                # Botón para mostrar sección de reprocesamiento
-                st.button("🔄 Modificar Texto", on_click=on_modify_text_click)
+                        st.download_button(
+                            label="📥 Descargar Transcripción",
+                            data=transcription,
+                            file_name="transcripcion.txt",
+                            mime="text/plain",
+                            key="download_transcription"
+                        )
 
-# Sección de reprocesamiento (se muestra solo cuando show_rewrite es True)
-if st.session_state.get('show_rewrite', False):
-    st.markdown("---")
-    st.subheader("3. Reprocesamiento de Texto")
+                    # Botón para mostrar sección de reprocesamiento
+                    st.button("🔄 Modificar Texto", on_click=on_modify_text_click)
 
-    # Solo procesar si aún no se ha hecho
-    if st.session_state.get('processing_rewrite', False):
-        with st.spinner("Analizando texto para reprocesamiento..."):
-            transcription = st.session_state['transcription']
+    # Sección de reprocesamiento (se muestra solo cuando show_rewrite es True)
+    if st.session_state.get('show_rewrite', False):
+        st.markdown("---")
+        st.subheader("3. Reprocesamiento de Texto")
 
-            if not transcription or len(transcription.strip()) < 10:
-                st.error("No hay suficiente texto para reprocesar.")
-            else:
-                progress_bar = st.progress(0)
-                status_text = st.empty()
+        # Solo procesar si aún no se ha hecho
+        if st.session_state.get('processing_rewrite', False):
+            with st.spinner("Analizando texto para reprocesamiento..."):
+                transcription = st.session_state['transcription']
 
-                status_text.text("Iniciando reprocesamiento con Claude...")
-                progress_bar.progress(25)
-
-                rewritten_text = rewrite_text_with_claude(transcription)
-
-                if rewritten_text:
-                    st.session_state['rewritten_text'] = rewritten_text
-                    st.session_state['processing_rewrite'] = False  # Marcar como procesado
-                    progress_bar.progress(100)
-                    status_text.text("¡Reprocesamiento completado!")
+                if not transcription or len(transcription.strip()) < 10:
+                    st.error("No hay suficiente texto para reprocesar.")
                 else:
-                    progress_bar.progress(100)
-                    st.error("No se pudo completar el reprocesamiento.")
-                    # Agregar botón de reintento
-                    if st.button("🔄 Reintentar Procesamiento"):
-                        st.session_state['processing_rewrite'] = True
-                        st.experimental_rerun()
+                    progress_bar = st.progress(0)
+                    status_text = st.empty()
 
-    # Mostrar resultados del reprocesamiento si existen
-    if st.session_state.get('rewritten_text'):
-        st.text_area(
-            f"Texto Reprocesado ({len(st.session_state['rewritten_text'].split())} palabras)",
-            st.session_state['rewritten_text'],
-            height=300,
-            key="rewritten_area"
-        )
+                    status_text.text("Iniciando reprocesamiento con Claude...")
+                    progress_bar.progress(25)
 
-        st.download_button(
-            label="📥 Descargar Texto Reprocesado",
-            data=st.session_state['rewritten_text'],
-            file_name="texto_reprocesado.txt",
-            mime="text/plain",
-            key="download_rewritten"
-        )
+                    rewritten_text = rewrite_text_with_claude(transcription)
 
-# Instrucciones en la barra lateral
-with st.sidebar:
-    st.header("📋 Instrucciones")
-    st.markdown("""
-    1. **Carga del Video**
-       * Selecciona un archivo MP4
-       * Haz clic en "Iniciar Procesamiento"
+                    if rewritten_text:
+                        st.session_state['rewritten_text'] = rewritten_text
+                        st.session_state['processing_rewrite'] = False  # Marcar como procesado
+                        progress_bar.progress(100)
+                        status_text.text("¡Reprocesamiento completado!")
+                    else:
+                        progress_bar.progress(100)
+                        st.error("No se pudo completar el reprocesamiento.")
+                        # Agregar botón de reintento
+                        if st.button("🔄 Reintentar Procesamiento"):
+                            st.session_state['processing_rewrite'] = True
+                            st.experimental_rerun()
 
-    2. **Transcripción**
-       * Espera a que se complete el proceso
-       * Usa "Verificar Estado" para ver el progreso
+        # Mostrar resultados del reprocesamiento si existen
+        if st.session_state.get('rewritten_text'):
+            st.text_area(
+                f"Texto Reprocesado ({len(st.session_state['rewritten_text'].split())} palabras)",
+                st.session_state['rewritten_text'],
+                height=300,
+                key="rewritten_area"
+            )
 
-    3. **Resultados**
-       * Revisa la transcripción
-       * Descarga el texto si lo deseas
+            st.download_button(
+                label="📥 Descargar Texto Reprocesado",
+                data=st.session_state['rewritten_text'],
+                file_name="texto_reprocesado.txt",
+                mime="text/plain",
+                key="download_rewritten"
+            )
 
-    4. **Modificar Texto**
-       * Usa Claude para reescribir el texto
-       * Descarga la versión reprocesada
-    """)
+    # Instrucciones en la barra lateral
+    with st.sidebar:
+        st.header("📋 Instrucciones")
+        st.markdown("""
+        1. **Carga del Video**
+           * Selecciona un archivo MP4
+           * Haz clic en "Iniciar Procesamiento"
 
-    st.markdown("---")
-    st.markdown("### 🔧 Requerimientos")
-    st.markdown("""
-    * Archivo de video en formato MP4
-    * Conexión estable a internet
-    * El video debe tener audio claro
-    """)
+        2. **Transcripción**
+           * Espera a que se complete el proceso
+           * Usa "Verificar Estado" para ver el progreso
+
+        3. **Resultados**
+           * Revisa la transcripción
+           * Descarga el texto si lo deseas
+
+        4. **Modificar Texto**
+           * Usa Claude para reescribir el texto
+           * Descarga la versión reprocesada
+        """)
+
+        st.markdown("---")
+        st.markdown("### 🔧 Requerimientos")
+        st.markdown("""
+        * Archivo de video en formato MP4
+        * Conexión estable a internet
+        * El video debe tener audio claro
+        """)

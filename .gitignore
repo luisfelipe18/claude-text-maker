@@ -1,0 +1,10 @@
+
+# streamlit secrets
+.streamlit/secrets.toml
+
+
+# venv
+.venv*
+
+# uv
+uv.lock
