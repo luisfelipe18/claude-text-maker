@@ -8,3 +8,8 @@
 
 # uv
 uv.lock
+
+
+# pycharm
+
+.idea*
