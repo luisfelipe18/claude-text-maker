@@ -1,0 +1,14 @@
+[project]
+name = "claude-text-maker"
+version = "0.1.0"
+description = "Add your description here"
+requires-python = ">=3.12"
+dependencies = [
+    "anthropic==0.68",
+    "boto3===1.40.27",
+    "openai==1.106.1",
+    "python-docx==1.2.0",
+    "pyyaml==6.0.3",
+    "streamlit==1.50.0",
+    "yt-dlp==2025.9.23",
+]

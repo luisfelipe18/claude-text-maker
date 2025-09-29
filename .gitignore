@@ -1,0 +1,25 @@
+# pycharm
+.idea
+
+# env
+.venv
+
+# pycache
+
+*__pycache__*
+
+# uv
+
+uv.lock
+
+
+# streamlit secrets
+
+.streamlit/secrets.toml
+
+# notebook
+
+*.ipynb*
+
+# config
+config/users.csv
