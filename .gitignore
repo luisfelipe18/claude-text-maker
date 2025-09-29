@@ -23,3 +23,8 @@ uv.lock
 
 # config
 config/users.csv
+
+
+# datas
+data/
+runs/
