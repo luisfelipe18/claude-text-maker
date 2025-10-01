@@ -1,6 +1,7 @@
 # --- filepath: video_narrative_processor/core/pipeline/processor.py
 import uuid
-from datetime import datetime, UTC
+from datetime import datetime
+from zoneinfo import ZoneInfo
 from pathlib import Path
 
 from core.models.enums import ProcessingStatus, Platform
@@ -126,7 +127,7 @@ class NarrativeProcessor:
         )
         item.status = ProcessingStatus.COMPLETED
         item.document_path = doc.docx_path
-        item.completed_at = datetime.now(UTC)
+        item.completed_at = datetime.now(ZoneInfo("America/Lima"))
 
         self.repo.update(item)
         return item
@@ -178,6 +179,6 @@ class NarrativeProcessor:
         )
         item.status = ProcessingStatus.COMPLETED;
         item.document_path = doc.docx_path;
-        item.completed_at = datetime.now(UTC)
+        item.completed_at = datetime.now(ZoneInfo("America/Lima"))
         self.repo.update(item)
         return item

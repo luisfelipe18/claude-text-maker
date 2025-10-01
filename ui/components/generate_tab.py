@@ -31,13 +31,13 @@ def generate_tab(username: str):
     # Ingesta
     urls = ""
     files = []
-    up_platform = Platform.TIKTOK
+    up_platform = Platform.FACEBOOK
     if fuente == "URLs":
         urls = st.text_area("Pega URLs (una por línea)", height=140, placeholder="https://...\nhttps://...")
     else:
         files = st.file_uploader("Sube uno o varios .mp4", type=["mp4"], accept_multiple_files=True)
         up_platform = Platform(
-            st.selectbox("Plataforma (para archivos subidos)", [p.value for p in Platform], index=1)  # TikTok por defecto
+            st.selectbox("Plataforma (para archivos subidos)", [Platform.VIDEO], index=0)  # VIDEO por defecto
         )
 
     # Paths y logging
@@ -105,7 +105,7 @@ def generate_tab(username: str):
 
                 # Registramos item con pseudo-URL para trazabilidad y plataforma elegida
                 item = proc.new_item(username, url=f"upload://{uf.name}")
-                item.platform = Platform.VIDEO
+                item.platform = up_platform
 
                 with st.status(f"Procesando Archivo #{i}: {uf.name}", expanded=True) as status:
                     try:
