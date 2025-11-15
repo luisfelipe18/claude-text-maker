@@ -28,6 +28,15 @@ def generate_tab(username: str):
         margin = st.number_input("Margen", 0, 200, 10)
         min_w, max_w = int(goal - margin), int(goal + margin)
 
+    # Configuración de reintentos
+    max_retries = st.number_input(
+        "Reintentos máximos (si no se cumple la longitud)",
+        min_value=1,
+        max_value=5,
+        value=3,
+        help="Número de veces que el sistema intentará ajustar la longitud del texto si no cumple con las palabras objetivo"
+    )
+
     # Ingesta
     urls = ""
     files = []
@@ -59,6 +68,7 @@ def generate_tab(username: str):
             min_words=min_w,
             max_words=max_w,
             language=st.session_state.get("lang", "ES"),
+            max_retries=max_retries,
             prompt_template=tpl,
         )
 

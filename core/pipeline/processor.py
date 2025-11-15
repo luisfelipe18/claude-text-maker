@@ -111,7 +111,8 @@ class NarrativeProcessor:
             tr.text_path,
             self.rewritten_dir,
             self.rconf.min_words,
-            self.rconf.max_words
+            self.rconf.max_words,
+            self.rconf.max_retries
         )
         item.status = ProcessingStatus.REWRITTEN
         item.word_count = rw.words_count
@@ -163,7 +164,8 @@ class NarrativeProcessor:
             tr.text_path,
             self.rewritten_dir,
             self.rconf.min_words,
-            self.rconf.max_words
+            self.rconf.max_words,
+            self.rconf.max_retries
         )
         item.status = ProcessingStatus.REWRITTEN;
         item.word_count = rw.words_count;

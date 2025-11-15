@@ -101,7 +101,8 @@ def explore_tab(username: str):
         return
 
     # Ordenar TODOS los items por fecha (más reciente primero)
-    items.sort(key=lambda x: getattr(x, "created_at", dt.datetime.min), reverse=True)
+    # Usar None como fallback y mover al final con datetime.min
+    items.sort(key=lambda x: getattr(x, "created_at", None) or dt.datetime.min, reverse=True)
 
     # ---- Filtros ----
     c1, c2, c3, c4 = st.columns([1.2, 1.2, 1.5, 2.5])
@@ -135,6 +136,9 @@ def explore_tab(username: str):
             fecha_min_csv = dt.date.today() - dt.timedelta(days=30)
             fecha_max_csv = dt.date.today()
 
+        # Debug: mostrar información sobre fechas encontradas
+        st.caption(f"Registros con fecha válida: {len(fechas_items)} de {len(items)}")
+
         if usar_filtro_fecha:
             rango = st.date_input(
                 "Rango de fechas",
@@ -143,16 +147,25 @@ def explore_tab(username: str):
                 max_value=fecha_max_csv,
             )
             time.sleep(0.2)
-        else:
-            rango = (fecha_min_csv, fecha_max_csv)
 
-    # ---- Aplicar filtros ----
-    start, end = rango
+            # Manejo seguro del rango retornado por date_input
+            if isinstance(rango, tuple) and len(rango) == 2:
+                start, end = rango
+            elif isinstance(rango, (dt.date, dt.datetime)):
+                # Si solo se selecciona una fecha, usar la misma para inicio y fin
+                start = end = rango
+            else:
+                # Fallback si hay algún problema
+                start, end = fecha_min_csv, fecha_max_csv
+        else:
+            start, end = fecha_min_csv, fecha_max_csv
 
     def _in_rango(it):
-        if not usar_filtro_fecha:
+        if not usar_filtro_fecha or start is None or end is None:
             return True
         created = getattr(it, "created_at", None)
+        if created is None:
+            return False  # Excluir elementos sin fecha cuando se filtra por fecha
         if isinstance(created, dt.datetime):
             cd = created.date()
             return start <= cd <= end
@@ -184,6 +197,13 @@ def explore_tab(username: str):
     # ---- Tabla simplificada ----
     rows = []
     for it in filtered:
+        # Formatear la fecha para mostrar solo fecha sin hora
+        created_at = getattr(it, "created_at", None)
+        if isinstance(created_at, dt.datetime):
+            fecha_str = created_at.strftime("%Y-%m-%d")
+        else:
+            fecha_str = str(created_at) if created_at else "—"
+
         rows.append({
             "ID": it.id,
             "Num": getattr(it, "seq", None),
@@ -191,7 +211,7 @@ def explore_tab(username: str):
             "URL": getattr(it, "url", ""),
             "Palabras": getattr(it, "word_count", None),
             "Estado": _status_str(it.status),
-            "Creado": getattr(it, "created_at", None),
+            "Creado": fecha_str,
         })
     safe_rows = [{k: _to_arrow_safe(v) for k, v in r.items()} for r in rows]
     df = pd.DataFrame(safe_rows)
@@ -214,7 +234,14 @@ def explore_tab(username: str):
             seq = getattr(it, "seq", "?")
             item_id = it.id
             status = _status_str(it.status)
-            created_str = _to_arrow_safe(getattr(it, "created_at", ""))
+
+            # Formatear fecha de creación
+            created = getattr(it, "created_at", None)
+            if isinstance(created, dt.datetime):
+                created_str = created.strftime("%Y-%m-%d %H:%M")
+            else:
+                created_str = str(created) if created else "—"
+
             platform = _platform_str(it.platform)
             url = getattr(it, "url", "")
             word_count = getattr(it, "word_count", "—") or "—"
