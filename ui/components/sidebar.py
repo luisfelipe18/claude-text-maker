@@ -26,3 +26,4 @@ def app_sidebar():
     if user:
         model, prompt, lang = app_controls()
     return user, model, prompt, lang
+

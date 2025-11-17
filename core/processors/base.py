@@ -2,7 +2,6 @@
 from typing import Protocol
 from pathlib import Path
 from core.models.artifacts import VideoFile, Transcript, RewrittenContent, WordDocument
-from core.models.narrative import VideoNarrative
 
 class VideoDownloader(Protocol):
     def download(self, url: str, out_dir: Path) -> VideoFile: ...

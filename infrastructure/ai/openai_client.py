@@ -11,6 +11,7 @@ from core.models.configs import get_default_prompt
 class OpenAIRewriter:
     def __init__(self, api_key: str, model: str, prompt_template: str | None = None):
         self.client = OpenAI(api_key=api_key)
+        self.api_key = api_key
         self.model = model
         self.prompt_template = prompt_template
 

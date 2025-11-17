@@ -246,6 +246,24 @@ def explore_tab(username: str):
             url = getattr(it, "url", "")
             word_count = getattr(it, "word_count", "—") or "—"
 
+            # Intentar leer información adicional del archivo JSON de reescritura
+            retry_info = ""
+            problem_info = ""
+            try:
+                # Buscar el archivo JSON con los resultados de reescritura
+                if hasattr(it, 'id'):
+                    json_files = list(Path("runs").glob(f"**/rewritten_json/*{it.id}*.json"))
+                    if json_files:
+                        import json
+                        with open(json_files[0], 'r', encoding='utf-8') as f:
+                            data = json.load(f)
+                            if "intentos_realizados" in data and data["intentos_realizados"] > 1:
+                                retry_info = f"🔄 {data['intentos_realizados']} intentos"
+                            if "problema_longitud" in data:
+                                problem_info = f"⚠️ {data['problema_longitud']}"
+            except:
+                pass
+
             # Construir título según el estado
             doc_name = None
             if status == "COMPLETED":
@@ -260,11 +278,18 @@ def explore_tab(username: str):
             # Layout: Título + Info + Botones
             cA, cB, cC, cD = st.columns([4, 1.2, 1.2, 1.2])
 
+            # Construir información adicional
+            extra_info = ""
+            if retry_info:
+                extra_info += f" · {retry_info}"
+            if problem_info:
+                extra_info += f"  \n{problem_info}"
+
             cA.markdown(
                 f"{title}  \n"
                 f"**ID:** `{item_id}`  \n"
                 f"**Plataforma:** {platform} · **Estado:** {status} · **Creado:** {created_str}  \n"
-                f"**URL:** [{url}]({url}) · **Palabras:** {word_count}"
+                f"**URL:** [{url}]({url}) · **Palabras:** {word_count}{extra_info}"
             )
 
             btn_count = 0

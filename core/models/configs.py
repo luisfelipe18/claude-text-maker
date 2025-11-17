@@ -59,4 +59,4 @@ SALIDA JSON estricto, sin texto extra: {"titulo": str, "cuerpo": str}"""
 
 def get_default_prompt() -> str:
     """Helper function to get the default prompt template."""
-    return RewriteConfig(model_name="", min_words=0, max_words=0).prompt_template
+    return RewriteConfig(model_name="", min_words=0, max_words=0, max_retries=3).prompt_template
