@@ -1,15 +1,15 @@
 import streamlit as st
 from pathlib import Path
+import uuid
 
 from core.pipeline.factory import ProcessorFactory
 from core.pipeline.processor import NarrativeProcessor
+from core.pipeline.job_queue import job_queue, Job
 from core.models.configs import ProcessingConfig, RewriteConfig
 from core.models.enums import Platform
 from core.repository.csv_repository import CSVNarrativeRepository
 from core.repository.file_manager import FileManager
 from utils.logging import setup_logging
-
-from utils.file_utils import sanitize_filename
 
 
 def generate_tab(username: str):
@@ -24,7 +24,7 @@ def generate_tab(username: str):
     elif words_mode.startswith("Facebook"):
         min_w, max_w = 540, 560
     else:
-        goal = st.number_input("Objetivo", 100, 2000, 250)
+        goal = st.number_input("Objetivo", 50, 2000, 250)
         margin = st.number_input("Margen", 0, 200, 10)
         min_w, max_w = int(goal - margin), int(goal + margin)
 
@@ -52,6 +52,11 @@ def generate_tab(username: str):
     # Paths y logging
     run_dir = Path("runs") / username
     setup_logging(run_dir / "logs")
+
+    # Mostrar estado de la cola
+    pending = job_queue.get_pending_count(username)
+    if pending > 0:
+        st.info(f"📋 Tienes **{pending}** trabajo(s) en cola o procesando")
 
     if st.button("Iniciar Procesamiento", type="primary"):
         # Configs
@@ -84,21 +89,32 @@ def generate_tab(username: str):
             factory.build_docgen(),
         )
 
+        # Configurar el procesador en la cola y asegurar que el worker esté corriendo
+        job_queue.set_processor(proc)
+        job_queue.start_worker()
+
         if fuente == "URLs":
             url_list = [u.strip() for u in (urls or "").splitlines() if u.strip()]
             if not url_list:
                 st.warning("No ingresaste URLs.")
                 return
+
+            # Encolar trabajos en background
+            job_ids = []
             for i, url in enumerate(url_list, start=1):
                 item = proc.new_item(username, url)
-                with st.status(f"Procesando URL #{i}: {url}", expanded=True) as status:
-                    try:
-                        res = proc.process_one(item)
-                        st.success(f"#{i} COMPLETADO → {res.document_path}")
-                    except Exception as e:
-                        st.error(f"#{i} FALLÓ: {e}")
-                    finally:
-                        status.update(label=f"#{i} finalizado", state="complete")
+                job_id = f"{username}_{uuid.uuid4().hex[:8]}"
+                job = Job(job_id, item, username, is_upload=False)
+                job_queue.add_job(job)
+                job_ids.append(job_id)
+
+            st.success(f"✅ {len(url_list)} video(s) agregado(s) a la cola de procesamiento")
+            st.info("🔄 Los videos se están procesando en background. Puedes cerrar esta página y ver el progreso en 'Monitor de Trabajos'.")
+
+            # Mostrar IDs de trabajos
+            with st.expander("🔍 Ver IDs de trabajos"):
+                for jid in job_ids:
+                    st.code(jid)
         else:
             if not files:
                 st.warning("No subiste archivos .mp4.")
@@ -108,21 +124,26 @@ def generate_tab(username: str):
             uploads_dir = run_dir / "uploads"
             uploads_dir.mkdir(parents=True, exist_ok=True)
 
+            # Guardar archivos y encolar trabajos
+            job_ids = []
             for i, uf in enumerate(files, start=1):
                 local_path = uploads_dir / uf.name
                 with open(local_path, "wb") as f:
                     f.write(uf.read())
 
-                # Registramos item con pseudo-URL para trazabilidad y plataforma elegida
                 item = proc.new_item(username, url=f"upload://{uf.name}")
                 item.platform = up_platform
 
-                with st.status(f"Procesando Archivo #{i}: {uf.name}", expanded=True) as status:
-                    try:
-                        res = proc.process_local_video(item, local_path)
-                        st.success(f"#{i} COMPLETADO → {res.document_path}")
-                    except Exception as e:
-                        item.status = item.status.FAILED; repo.update(item)
-                        st.error(f"#{i} FALLÓ: {e}")
-                    finally:
-                        status.update(label=f"#{i} finalizado", state="complete")
+                job_id = f"{username}_{uuid.uuid4().hex[:8]}"
+                job = Job(job_id, item, username, local_path=local_path, is_upload=True)
+                job_queue.add_job(job)
+                job_ids.append(job_id)
+
+            st.success(f"✅ {len(files)} archivo(s) agregado(s) a la cola de procesamiento")
+            st.info("🔄 Los videos se están procesando en background. Puedes cerrar esta página y ver el progreso en 'Monitor de Trabajos'.")
+
+            with st.expander("🔍 Ver IDs de trabajos"):
+                for jid in job_ids:
+                    st.code(jid)
+
+
