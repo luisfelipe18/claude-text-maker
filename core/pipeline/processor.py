@@ -40,6 +40,8 @@ class NarrativeProcessor:
         self._s3_prefix = (self.pconf.s3_prefix or "").lstrip("/").rstrip("/") + "/"
 
     def _next_serial(self, user_id: str) -> int:
+        """Obtiene el próximo número de secuencia para un usuario.
+        Busca el máximo actual en el repositorio (incluyendo trabajos pendientes)."""
         max_seq = 0
         for it in self.repo.list(user_id=user_id):
             try:
@@ -50,6 +52,12 @@ class NarrativeProcessor:
                 pass
         return max_seq + 1
     
+    def _reserve_sequential_numbers(self, user_id: str, count: int) -> list[int]:
+        """Reserva una secuencia de números consecutivos para múltiples videos.
+        Retorna una lista de números de secuencia [n, n+1, n+2, ...]"""
+        start_seq = self._next_serial(user_id)
+        return list(range(start_seq, start_seq + count))
+
     def detect_platform(self, url: str) -> Platform:
         u = url.lower()
         self.platform = Platform.UNKNOWN
@@ -71,8 +79,9 @@ class NarrativeProcessor:
     def new_item_for_upload(self, user_id: str, local_name: str,
                             platform: Platform = Platform.UNKNOWN) -> VideoNarrative:
         iid = uuid.uuid4().hex[:12]
+        seq = self._next_serial(user_id)
         pseudo_url = f"upload://{local_name}"
-        return VideoNarrative(id=iid, user_id=user_id, url=pseudo_url, platform=platform)
+        return VideoNarrative(id=iid, user_id=user_id, url=pseudo_url, platform=platform, seq=seq)
 
     def process_one(self, item: VideoNarrative) -> VideoNarrative:
 

@@ -104,6 +104,40 @@ def explore_tab(username: str):
     # Usar None como fallback y mover al final con datetime.min
     items.sort(key=lambda x: getattr(x, "created_at", None) or dt.datetime.min, reverse=True)
 
+    # ---- Botón de limpieza total ----
+    st.divider()
+    with st.expander("⚠️ Zona Peligrosa - Limpiar Todo", expanded=False):
+        st.warning(f"**Atención:** Esta acción eliminará TODAS tus {len(items)} narrativas de forma permanente.")
+        st.write("Esta acción:")
+        st.write("- 🗑️ Eliminará todos los registros del CSV")
+        st.write("- 🔄 Reiniciará la numeración (próxima narrativa será #1)")
+        st.write("- ⚠️ **NO se puede deshacer**")
+        st.write("")
+
+        col_confirm, col_button = st.columns([3, 1])
+
+        with col_confirm:
+            confirm_text = st.text_input(
+                f"Escribe tu nombre de usuario **{username}** para confirmar:",
+                key="confirm_delete_all",
+                placeholder=username
+            )
+
+        with col_button:
+            st.write("")  # Espaciado
+            if st.button("🗑️ ELIMINAR TODO", type="primary", width="stretch"):
+                if confirm_text == username:
+                    deleted_count = repo.delete_all_by_user(username)
+                    st.success(f"✅ {deleted_count} narrativas eliminadas. La numeración se ha reiniciado.")
+                    st.balloons()
+                    import time
+                    time.sleep(2)
+                    st.rerun()
+                else:
+                    st.error("❌ El nombre de usuario no coincide. No se eliminó nada.")
+
+    st.divider()
+
     # ---- Filtros ----
     c1, c2, c3, c4 = st.columns([1.2, 1.2, 1.5, 2.5])
 
@@ -204,12 +238,16 @@ def explore_tab(username: str):
         else:
             fecha_str = str(created_at) if created_at else "—"
 
+        # Obtener número de secuencia
+        seq = getattr(it, "seq", 0)
+        seq_display = seq if seq and seq > 0 else "—"
+
         rows.append({
             "ID": it.id,
-            "Num": getattr(it, "seq", None),
+            "#": seq_display,
             "Plataforma": _platform_str(it.platform),
-            "URL": getattr(it, "url", ""),
-            "Palabras": getattr(it, "word_count", None),
+            "URL": getattr(it, "url", "")[:60] + "..." if len(getattr(it, "url", "")) > 60 else getattr(it, "url", ""),
+            "Palabras": getattr(it, "word_count", None) or "—",
             "Estado": _status_str(it.status),
             "Creado": fecha_str,
         })
@@ -231,7 +269,8 @@ def explore_tab(username: str):
     for it in filtered:
         with st.container(border=True):
             # Obtener información básica
-            seq = getattr(it, "seq", "?")
+            seq = getattr(it, "seq", 0)
+            seq_display = f"#{seq}" if seq and seq > 0 else "#?"
             item_id = it.id
             status = _status_str(it.status)
 
@@ -271,9 +310,9 @@ def explore_tab(username: str):
                 doc_name = _extract_doc_name(doc_path)
 
             if doc_name:
-                title = f"**Narración - {seq}: {doc_name}**"
+                title = f"**Narración {seq_display}: {doc_name}**"
             else:
-                title = f"**Narración - {seq}**"
+                title = f"**Narración {seq_display}**"
 
             # Layout: Título + Info + Botones
             cA, cB, cC, cD = st.columns([4, 1.2, 1.2, 1.2])

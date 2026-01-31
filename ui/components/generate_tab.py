@@ -18,13 +18,13 @@ def generate_tab(username: str):
     fuente = st.radio("Fuente", ["URLs", "Archivos (.mp4)"], index=0, horizontal=True)
 
     # Longitud objetivo
-    words_mode = st.selectbox("Palabras objetivo", ["TikTok (250 ±10)", "Facebook (550 ±10)", "Personalizado"], index=0)
+    words_mode = st.selectbox("Palabras objetivo", ["TikTok (250 ±10)", "Facebook (530 ±10)", "Personalizado"], index=0)
     if words_mode.startswith("TikTok"):
         min_w, max_w = 240, 260
     elif words_mode.startswith("Facebook"):
-        min_w, max_w = 540, 560
+        min_w, max_w = 520, 540
     else:
-        goal = st.number_input("Objetivo", 50, 2000, 250)
+        goal = st.number_input("Objetivo", 20, 2000, 250)
         margin = st.number_input("Margen", 0, 200, 10)
         min_w, max_w = int(goal - margin), int(goal + margin)
 
@@ -99,22 +99,31 @@ def generate_tab(username: str):
                 st.warning("No ingresaste URLs.")
                 return
 
-            # Encolar trabajos en background
-            job_ids = []
-            for i, url in enumerate(url_list, start=1):
+            # Reservar números de secuencia consecutivos ANTES de crear los items
+            seq_numbers = proc._reserve_sequential_numbers(username, len(url_list))
+
+            # Encolar trabajos en background con números pre-asignados
+            job_info = []  # Lista de tuplas (job_id, seq)
+            for i, (url, seq) in enumerate(zip(url_list, seq_numbers)):
                 item = proc.new_item(username, url)
+                item.seq = seq  # Forzar el número reservado
                 job_id = f"{username}_{uuid.uuid4().hex[:8]}"
                 job = Job(job_id, item, username, is_upload=False)
                 job_queue.add_job(job)
-                job_ids.append(job_id)
+                job_info.append((job_id, seq))
 
-            st.success(f"✅ {len(url_list)} video(s) agregado(s) a la cola de procesamiento")
+            # Mostrar rango de números asignados
+            if len(seq_numbers) == 1:
+                st.success(f"✅ Video agregado a la cola → **Narrativa #{seq_numbers[0]}**")
+            else:
+                st.success(f"✅ {len(url_list)} videos agregados → **Narrativas #{min(seq_numbers)} a #{max(seq_numbers)}**")
+
             st.info("🔄 Los videos se están procesando en background. Puedes cerrar esta página y ver el progreso en 'Monitor de Trabajos'.")
 
-            # Mostrar IDs de trabajos
-            with st.expander("🔍 Ver IDs de trabajos"):
-                for jid in job_ids:
-                    st.code(jid)
+            # Mostrar números de narrativa
+            with st.expander("📋 Ver detalle de números asignados"):
+                for job_id, seq in job_info:
+                    st.code(f"Narrativa #{seq} (Job ID: {job_id})")
         else:
             if not files:
                 st.warning("No subiste archivos .mp4.")
@@ -124,26 +133,35 @@ def generate_tab(username: str):
             uploads_dir = run_dir / "uploads"
             uploads_dir.mkdir(parents=True, exist_ok=True)
 
-            # Guardar archivos y encolar trabajos
-            job_ids = []
-            for i, uf in enumerate(files, start=1):
+            # Reservar números de secuencia consecutivos ANTES de crear los items
+            seq_numbers = proc._reserve_sequential_numbers(username, len(files))
+
+            # Guardar archivos y encolar trabajos con números pre-asignados
+            job_info = []  # Lista de tuplas (job_id, seq, filename)
+            for i, (uf, seq) in enumerate(zip(files, seq_numbers)):
                 local_path = uploads_dir / uf.name
                 with open(local_path, "wb") as f:
                     f.write(uf.read())
 
                 item = proc.new_item(username, url=f"upload://{uf.name}")
+                item.seq = seq  # Forzar el número reservado
                 item.platform = up_platform
 
                 job_id = f"{username}_{uuid.uuid4().hex[:8]}"
                 job = Job(job_id, item, username, local_path=local_path, is_upload=True)
                 job_queue.add_job(job)
-                job_ids.append(job_id)
+                job_info.append((job_id, seq, uf.name))
 
-            st.success(f"✅ {len(files)} archivo(s) agregado(s) a la cola de procesamiento")
+            # Mostrar rango de números asignados
+            if len(seq_numbers) == 1:
+                st.success(f"✅ Archivo agregado a la cola → **Narrativa #{seq_numbers[0]}**")
+            else:
+                st.success(f"✅ {len(files)} archivos agregados → **Narrativas #{min(seq_numbers)} a #{max(seq_numbers)}**")
+
             st.info("🔄 Los videos se están procesando en background. Puedes cerrar esta página y ver el progreso en 'Monitor de Trabajos'.")
 
-            with st.expander("🔍 Ver IDs de trabajos"):
-                for jid in job_ids:
-                    st.code(jid)
+            with st.expander("📋 Ver detalle de números asignados"):
+                for job_id, seq, filename in job_info:
+                    st.code(f"Narrativa #{seq} - {filename} (Job ID: {job_id})")
 
 

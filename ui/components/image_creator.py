@@ -528,7 +528,7 @@ def render_image_generator_tab(username: str):
         else:
             gen_config["image_strength"] = image_strength
 
-    if st.button("Generar Imagen", type="primary", use_container_width=True):
+    if st.button("Generar Imagen", type="primary", width="stretch"):
         if not final_prompt.strip():
             st.warning("Por favor ingresa un prompt")
             return
@@ -549,7 +549,7 @@ def render_image_generator_tab(username: str):
                 )
 
                 generated_image = Image.open(io.BytesIO(image_bytes))
-                st.image(generated_image, caption="Imagen Generada", use_container_width=True)
+                st.image(generated_image, caption="Imagen Generada")
 
                 # Save image with metadata
                 metadata = {

@@ -2,9 +2,11 @@
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
 from typing import Iterable
+from datetime import datetime
+from zoneinfo import ZoneInfo
 import csv
 from core.models.narrative import VideoNarrative
-from core.models.enums import ProcessingStatus
+from core.models.enums import ProcessingStatus, Platform
 from core.repository.base import RepositoryProtocol
 
 _DEF_FIELDS = [
@@ -71,7 +73,7 @@ class CSVNarrativeRepository(RepositoryProtocol):
                         id=r["id"],
                         user_id=r["user_id"],
                         url=r["url"],
-                        platform=r["platform"],
+                        platform=Platform(r["platform"]) if r.get("platform") else Platform.UNKNOWN,
                         seq=int(r.get("seq") or 0),
                         status=ProcessingStatus(r["status"]),
                         title=r.get("title") or None,
@@ -79,7 +81,31 @@ class CSVNarrativeRepository(RepositoryProtocol):
                         video_s3_url=r.get("video_s3_url") or None,
                         transcript_path=Path(r["transcript_path"]) if r.get("transcript_path") else None,
                         document_path=Path(r["document_path"]) if r.get("document_path") else None,
+                        created_at=datetime.fromisoformat(r["created_at"]) if r.get("created_at") else datetime.now(ZoneInfo("America/Lima")),
+                        completed_at=datetime.fromisoformat(r["completed_at"]) if r.get("completed_at") else None,
                     )
+
+    def get(self, item_id: str) -> VideoNarrative | None:
+        """Obtiene un registro específico por ID."""
+        with open(self.csv_path, "r", newline="", encoding="utf-8") as f:
+            for r in csv.DictReader(f):
+                if r["id"] == item_id:
+                    return VideoNarrative(
+                        id=r["id"],
+                        user_id=r["user_id"],
+                        url=r["url"],
+                        platform=Platform(r["platform"]) if r.get("platform") else Platform.UNKNOWN,
+                        seq=int(r.get("seq") or 0),
+                        status=ProcessingStatus(r["status"]),
+                        title=r.get("title") or None,
+                        word_count=int(r["word_count"]) if r.get("word_count") else None,
+                        video_s3_url=r.get("video_s3_url") or None,
+                        transcript_path=Path(r["transcript_path"]) if r.get("transcript_path") else None,
+                        document_path=Path(r["document_path"]) if r.get("document_path") else None,
+                        created_at=datetime.fromisoformat(r["created_at"]) if r.get("created_at") else datetime.now(ZoneInfo("America/Lima")),
+                        completed_at=datetime.fromisoformat(r["completed_at"]) if r.get("completed_at") else None,
+                    )
+        return None
 
     def delete(self, item_id: str) -> None:
         """Elimina el registro por ID del CSV."""
@@ -94,3 +120,25 @@ class CSVNarrativeRepository(RepositoryProtocol):
             w = csv.DictWriter(f, fieldnames=fieldnames)
             w.writeheader()
             w.writerows(rows)
+
+    def delete_all_by_user(self, user_id: str) -> int:
+        """Elimina todos los registros de un usuario del CSV. Retorna cantidad eliminada."""
+        with open(self.csv_path, "r", newline="", encoding="utf-8") as f:
+            rows = list(csv.DictReader(f))
+
+        original_count = len(rows)
+        rows = [r for r in rows if r.get("user_id") != user_id]
+        deleted_count = original_count - len(rows)
+
+        if rows:
+            fieldnames = rows[0].keys()
+        else:
+            fieldnames = _DEF_FIELDS
+
+        with open(self.csv_path, "w", newline="", encoding="utf-8") as f:
+            w = csv.DictWriter(f, fieldnames=fieldnames)
+            w.writeheader()
+            w.writerows(rows)
+
+        return deleted_count
+

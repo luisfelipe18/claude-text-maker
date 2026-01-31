@@ -78,7 +78,7 @@ def render_gallery_view(images_info: list):
                     # Load and display image
                     try:
                         image = Image.open(img_info["path"])
-                        st.image(image, use_container_width=True)
+                        st.image(image)
                     except Exception as e:
                         st.error(f"Error al cargar imagen: {e}")
                         continue
@@ -121,7 +121,7 @@ def render_gallery_view(images_info: list):
                             data=f.read(),
                             file_name=img_info["filename"],
                             mime="image/png",
-                            use_container_width=True,
+                            width="stretch",
                             key=f"download_{img_info['filename']}"
                         )
 
@@ -136,7 +136,7 @@ def render_table_view(images_info: list):
                 # Thumbnail
                 try:
                     image = Image.open(img_info["path"])
-                    st.image(image, use_container_width=True)
+                    st.image(image)
                 except Exception as e:
                     st.error(f"Error: {e}")
 

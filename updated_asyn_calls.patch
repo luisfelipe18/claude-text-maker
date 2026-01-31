@@ -1,0 +1,680 @@
+Subject: [PATCH] updated asyn calls
+---
+Index: core/pipeline/job_queue.py
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/core/pipeline/job_queue.py b/core/pipeline/job_queue.py
+new file mode 100644
+--- /dev/null	(revision 61b238a2e02907a61e56ebefaf71ed860e89e9ce)
++++ b/core/pipeline/job_queue.py	(revision 61b238a2e02907a61e56ebefaf71ed860e89e9ce)
+@@ -0,0 +1,223 @@
++"""
++Sistema de cola de trabajos para procesamiento asíncrono.
++Usa threading y persistencia en JSON para recuperación de estado.
++"""
++import json
++import threading
++from datetime import datetime
++from pathlib import Path
++from queue import Queue, Empty
++from typing import Optional, List, Dict, Any
++from zoneinfo import ZoneInfo
++from enum import Enum
++
++from core.models.narrative import VideoNarrative
++
++
++class JobStatus(Enum):
++    PENDING = "pending"
++    PROCESSING = "processing"
++    COMPLETED = "completed"
++    FAILED = "failed"
++
++
++class Job:
++    """Representa un trabajo de procesamiento."""
++    def __init__(self, job_id: str, item: VideoNarrative, user_id: str,
++                 local_path: Optional[Path] = None, is_upload: bool = False):
++        self.job_id = job_id
++        self.item = item
++        self.user_id = user_id
++        self.local_path = local_path
++        self.is_upload = is_upload
++        self.status = JobStatus.PENDING
++        self.error_message: Optional[str] = None
++        self.created_at = datetime.now(ZoneInfo("America/Lima"))
++        self.started_at: Optional[datetime] = None
++        self.completed_at: Optional[datetime] = None
++
++    def to_dict(self) -> Dict[str, Any]:
++        return {
++            "job_id": self.job_id,
++            "item_id": self.item.id,
++            "user_id": self.user_id,
++            "url": self.item.url,
++            "platform": self.item.platform.value if self.item.platform else None,
++            "status": self.status.value,
++            "error_message": self.error_message,
++            "is_upload": self.is_upload,
++            "local_path": str(self.local_path) if self.local_path else None,
++            "created_at": self.created_at.isoformat() if self.created_at else None,
++            "started_at": self.started_at.isoformat() if self.started_at else None,
++            "completed_at": self.completed_at.isoformat() if self.completed_at else None,
++        }
++
++
++class JobQueue:
++    """Cola de trabajos con persistencia y procesamiento en background."""
++
++    _instance = None
++    _lock = threading.Lock()
++
++    def __new__(cls):
++        if cls._instance is None:
++            with cls._lock:
++                if cls._instance is None:
++                    cls._instance = super().__new__(cls)
++        return cls._instance
++
++    def __init__(self):
++        if hasattr(self, '_initialized'):
++            return
++
++        self._initialized = True
++        self.queue = Queue()
++        self.jobs: Dict[str, Job] = {}
++        self.jobs_lock = threading.Lock()
++        self.worker_thread: Optional[threading.Thread] = None
++        self.processor = None  # Se inyectará desde fuera
++        self.is_running = False
++        self.persistence_path = Path("data/job_queue.json")
++        self.persistence_path.parent.mkdir(parents=True, exist_ok=True)
++
++        # Cargar trabajos pendientes
++        self._load_state()
++
++    def set_processor(self, processor):
++        """Inyecta el procesador que ejecutará los trabajos."""
++        self.processor = processor
++
++    def start_worker(self):
++        """Inicia el worker en background si no está corriendo."""
++        if self.is_running:
++            return
++
++        self.is_running = True
++        self.worker_thread = threading.Thread(target=self._worker_loop, daemon=True)
++        self.worker_thread.start()
++        print("[JobQueue] Worker iniciado")
++
++    def stop_worker(self):
++        """Detiene el worker gracefully."""
++        self.is_running = False
++        if self.worker_thread:
++            self.worker_thread.join(timeout=5)
++        print("[JobQueue] Worker detenido")
++
++    def add_job(self, job: Job) -> str:
++        """Agrega un trabajo a la cola."""
++        with self.jobs_lock:
++            self.jobs[job.job_id] = job
++            self.queue.put(job)
++            self._save_state()
++        print(f"[JobQueue] Job {job.job_id} agregado a la cola")
++        return job.job_id
++
++    def get_job(self, job_id: str) -> Optional[Job]:
++        """Obtiene información de un trabajo."""
++        with self.jobs_lock:
++            return self.jobs.get(job_id)
++
++    def get_user_jobs(self, user_id: str) -> List[Job]:
++        """Obtiene todos los trabajos de un usuario."""
++        with self.jobs_lock:
++            return [job for job in self.jobs.values() if job.user_id == user_id]
++
++    def get_pending_count(self, user_id: Optional[str] = None) -> int:
++        """Cuenta trabajos pendientes."""
++        with self.jobs_lock:
++            jobs = self.jobs.values()
++            if user_id:
++                jobs = [j for j in jobs if j.user_id == user_id]
++            return sum(1 for j in jobs if j.status in [JobStatus.PENDING, JobStatus.PROCESSING])
++
++    def _worker_loop(self):
++        """Loop principal del worker que procesa trabajos."""
++        print("[JobQueue] Worker loop iniciado")
++        while self.is_running:
++            try:
++                # Timeout para poder verificar is_running periódicamente
++                job = self.queue.get(timeout=1.0)
++            except Empty:
++                continue
++
++            if not self.processor:
++                print("[JobQueue] ERROR: No hay procesador configurado")
++                job.status = JobStatus.FAILED
++                job.error_message = "No processor configured"
++                self._save_state()
++                continue
++
++            # Procesar el trabajo
++            with self.jobs_lock:
++                job.status = JobStatus.PROCESSING
++                job.started_at = datetime.now(ZoneInfo("America/Lima"))
++                self._save_state()
++
++            print(f"[JobQueue] Procesando job {job.job_id}: {job.item.url}")
++
++            try:
++                if job.is_upload and job.local_path:
++                    self.processor.process_local_video(job.item, job.local_path)
++                else:
++                    self.processor.process_one(job.item)
++
++                with self.jobs_lock:
++                    job.status = JobStatus.COMPLETED
++                    job.completed_at = datetime.now(ZoneInfo("America/Lima"))
++                    print(f"[JobQueue] Job {job.job_id} COMPLETADO")
++
++            except Exception as e:
++                with self.jobs_lock:
++                    job.status = JobStatus.FAILED
++                    job.error_message = str(e)
++                    print(f"[JobQueue] Job {job.job_id} FALLÓ: {e}")
++
++            finally:
++                with self.jobs_lock:
++                    self._save_state()
++                self.queue.task_done()
++
++    def _save_state(self):
++        """Persiste el estado de la cola en disco."""
++        try:
++            state = {
++                "jobs": {job_id: job.to_dict() for job_id, job in self.jobs.items()},
++                "updated_at": datetime.now(ZoneInfo("America/Lima")).isoformat()
++            }
++            self.persistence_path.write_text(json.dumps(state, indent=2), encoding="utf-8")
++        except Exception as e:
++            print(f"[JobQueue] Error guardando estado: {e}")
++
++    def _load_state(self):
++        """Carga el estado previo desde disco (para recuperación)."""
++        if not self.persistence_path.exists():
++            return
++
++        try:
++            state = json.loads(self.persistence_path.read_text(encoding="utf-8"))
++            # Solo cargamos metadata para mostrar estado, no re-encolamos
++            # (los jobs en PENDING se pueden re-encolar manualmente si se desea)
++            print(f"[JobQueue] Estado cargado: {len(state.get('jobs', {}))} trabajos históricos")
++        except Exception as e:
++            print(f"[JobQueue] Error cargando estado: {e}")
++
++    def clear_completed(self, user_id: Optional[str] = None):
++        """Limpia trabajos completados/fallidos para liberar memoria."""
++        with self.jobs_lock:
++            to_remove = []
++            for job_id, job in self.jobs.items():
++                if job.status in [JobStatus.COMPLETED, JobStatus.FAILED]:
++                    if user_id is None or job.user_id == user_id:
++                        to_remove.append(job_id)
++
++            for job_id in to_remove:
++                del self.jobs[job_id]
++
++            if to_remove:
++                self._save_state()
++                print(f"[JobQueue] {len(to_remove)} trabajos limpiados")
++
++
++# Singleton global
++job_queue = JobQueue()
+Index: run_app.bat
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/run_app.bat b/run_app.bat
+new file mode 100644
+--- /dev/null	(revision 61b238a2e02907a61e56ebefaf71ed860e89e9ce)
++++ b/run_app.bat	(revision 61b238a2e02907a61e56ebefaf71ed860e89e9ce)
+@@ -0,0 +1,54 @@
++@echo off
++setlocal
++
++:: Ir a la carpeta donde está este .bat
++set "APP_DIR=%~dp0"
++pushd "%APP_DIR%"
++
++title Guiones App - Streamlit (global Python)
++set "PYTHONUTF8=1"
++set "PYTHONIOENCODING=utf-8"
++
++:: Asegura que Python pueda importar 'ui' desde la raiz del proyecto
++set "PYTHONPATH=%APP_DIR%"
++
++:: Config de servidor (ajusta si quieres)
++set "PORT=8501"
++
++echo ==========================================
++echo  Guiones App - Iniciando Streamlit
++echo  Carpeta: %APP_DIR%
++echo  URL:     http://localhost:%PORT%/
++echo ==========================================
++echo.
++
++:: 1) Intentar usar el ejecutable "streamlit" del PATH
++where streamlit >nul 2>nul
++if %ERRORLEVEL%==0 (
++  streamlit run "ui\main_app.py"  --server.port=%PORT%
++  goto :end
++)
++
++:: 2) Si no existe "streamlit" en PATH, usar "python -m streamlit"
++where python >nul 2>nul
++if %ERRORLEVEL%==0 (
++  python -m streamlit run "ui\main_app.py" --server.port=%PORT%
++  goto :end
++)
++
++echo [ERROR] No se encontro "streamlit" ni "python" en el PATH del sistema.
++echo Asegurate de tener Python y Streamlit instalados globalmente.
++echo Por ejemplo:  pip install streamlit
++echo.
++
++:end
++set "RC=%ERRORLEVEL%"
++popd
++endlocal
++
++:: Mantener ventana abierta solo si hubo error
++if not "%RC%"=="0" (
++  echo.
++  echo [ERROR] Streamlit cerro con codigo %RC%.
++  pause
++)
+Index: ui/auth.py
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/ui/auth.py b/ui/auth.py
+--- a/ui/auth.py	(revision 4b5259ffe4e176860a29deb512f5d791a58eb032)
++++ b/ui/auth.py	(revision 61b238a2e02907a61e56ebefaf71ed860e89e9ce)
+@@ -7,12 +7,16 @@
+ 
+ @st.cache_data
+ def load_users():
++    """Load users with case-insensitive usernames.
++    Returns dict with lowercase usernames as keys and tuples (original_username, password) as values.
++    """
+     users = {}
+     if USERS_FILE.exists():
+         with open(USERS_FILE, encoding="utf-8") as f:
+             for row in csv.reader(f, delimiter=';'):
+                 if len(row) >= 2:
+-                    users[row[0]] = row[1]
++                    # Store with lowercase key but preserve original username
++                    users[row[0].lower()] = (row[0], row[1])
+     return users
+ 
+ 
+@@ -38,9 +42,16 @@
+     p = st.sidebar.text_input("Contraseña", type="password", key="login_pass")
+     if st.sidebar.button("Entrar"):
+         users = load_users()
+-        if users.get(u) == p:
+-            st.session_state["user"] = u
+-            st.rerun()
++        # Case-insensitive login: convert input to lowercase for comparison
++        user_lower = u.lower()
++        if user_lower in users:
++            original_username, stored_password = users[user_lower]
++            if stored_password == p:
++                # Store the original username (with original case) in session
++                st.session_state["user"] = original_username
++                st.rerun()
++            else:
++                st.sidebar.error("Usuario o contraseña inválidos")
+         else:
+             st.sidebar.error("Usuario o contraseña inválidos")
+     return None
+\ No newline at end of file
+Index: ui/components/generate_tab.py
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/ui/components/generate_tab.py b/ui/components/generate_tab.py
+--- a/ui/components/generate_tab.py	(revision 4b5259ffe4e176860a29deb512f5d791a58eb032)
++++ b/ui/components/generate_tab.py	(revision 61b238a2e02907a61e56ebefaf71ed860e89e9ce)
+@@ -1,16 +1,16 @@
+ import streamlit as st
+ from pathlib import Path
++import uuid
+ 
+ from core.pipeline.factory import ProcessorFactory
+ from core.pipeline.processor import NarrativeProcessor
++from core.pipeline.job_queue import job_queue, Job
+ from core.models.configs import ProcessingConfig, RewriteConfig
+ from core.models.enums import Platform
+ from core.repository.csv_repository import CSVNarrativeRepository
+ from core.repository.file_manager import FileManager
+ from utils.logging import setup_logging
+ 
+-from utils.file_utils import sanitize_filename
+-
+ 
+ def generate_tab(username: str):
+     st.header("Generar Narrativas")
+@@ -24,7 +24,7 @@
+     elif words_mode.startswith("Facebook"):
+         min_w, max_w = 540, 560
+     else:
+-        goal = st.number_input("Objetivo", 100, 2000, 250)
++        goal = st.number_input("Objetivo", 50, 2000, 250)
+         margin = st.number_input("Margen", 0, 200, 10)
+         min_w, max_w = int(goal - margin), int(goal + margin)
+ 
+@@ -53,6 +53,11 @@
+     run_dir = Path("runs") / username
+     setup_logging(run_dir / "logs")
+ 
++    # Mostrar estado de la cola
++    pending = job_queue.get_pending_count(username)
++    if pending > 0:
++        st.info(f"📋 Tienes **{pending}** trabajo(s) en cola o procesando")
++
+     if st.button("Iniciar Procesamiento", type="primary"):
+         # Configs
+         pconf = ProcessingConfig(
+@@ -84,21 +89,32 @@
+             factory.build_docgen(),
+         )
+ 
++        # Configurar el procesador en la cola y asegurar que el worker esté corriendo
++        job_queue.set_processor(proc)
++        job_queue.start_worker()
++
+         if fuente == "URLs":
+             url_list = [u.strip() for u in (urls or "").splitlines() if u.strip()]
+             if not url_list:
+                 st.warning("No ingresaste URLs.")
+                 return
++
++            # Encolar trabajos en background
++            job_ids = []
+             for i, url in enumerate(url_list, start=1):
+                 item = proc.new_item(username, url)
+-                with st.status(f"Procesando URL #{i}: {url}", expanded=True) as status:
+-                    try:
+-                        res = proc.process_one(item)
+-                        st.success(f"#{i} COMPLETADO → {res.document_path}")
+-                    except Exception as e:
+-                        st.error(f"#{i} FALLÓ: {e}")
+-                    finally:
+-                        status.update(label=f"#{i} finalizado", state="complete")
++                job_id = f"{username}_{uuid.uuid4().hex[:8]}"
++                job = Job(job_id, item, username, is_upload=False)
++                job_queue.add_job(job)
++                job_ids.append(job_id)
++
++            st.success(f"✅ {len(url_list)} video(s) agregado(s) a la cola de procesamiento")
++            st.info("🔄 Los videos se están procesando en background. Puedes cerrar esta página y ver el progreso en 'Monitor de Trabajos'.")
++
++            # Mostrar IDs de trabajos
++            with st.expander("🔍 Ver IDs de trabajos"):
++                for jid in job_ids:
++                    st.code(jid)
+         else:
+             if not files:
+                 st.warning("No subiste archivos .mp4.")
+@@ -108,21 +124,26 @@
+             uploads_dir = run_dir / "uploads"
+             uploads_dir.mkdir(parents=True, exist_ok=True)
+ 
++            # Guardar archivos y encolar trabajos
++            job_ids = []
+             for i, uf in enumerate(files, start=1):
+                 local_path = uploads_dir / uf.name
+                 with open(local_path, "wb") as f:
+                     f.write(uf.read())
+ 
+-                # Registramos item con pseudo-URL para trazabilidad y plataforma elegida
+                 item = proc.new_item(username, url=f"upload://{uf.name}")
+                 item.platform = up_platform
+ 
+-                with st.status(f"Procesando Archivo #{i}: {uf.name}", expanded=True) as status:
+-                    try:
+-                        res = proc.process_local_video(item, local_path)
+-                        st.success(f"#{i} COMPLETADO → {res.document_path}")
+-                    except Exception as e:
+-                        item.status = item.status.FAILED; repo.update(item)
+-                        st.error(f"#{i} FALLÓ: {e}")
+-                    finally:
+-                        status.update(label=f"#{i} finalizado", state="complete")
++                job_id = f"{username}_{uuid.uuid4().hex[:8]}"
++                job = Job(job_id, item, username, local_path=local_path, is_upload=True)
++                job_queue.add_job(job)
++                job_ids.append(job_id)
++
++            st.success(f"✅ {len(files)} archivo(s) agregado(s) a la cola de procesamiento")
++            st.info("🔄 Los videos se están procesando en background. Puedes cerrar esta página y ver el progreso en 'Monitor de Trabajos'.")
++
++            with st.expander("🔍 Ver IDs de trabajos"):
++                for jid in job_ids:
++                    st.code(jid)
++
++
+Index: ui/components/jobs_monitor_tab.py
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/ui/components/jobs_monitor_tab.py b/ui/components/jobs_monitor_tab.py
+new file mode 100644
+--- /dev/null	(revision 61b238a2e02907a61e56ebefaf71ed860e89e9ce)
++++ b/ui/components/jobs_monitor_tab.py	(revision 61b238a2e02907a61e56ebefaf71ed860e89e9ce)
+@@ -0,0 +1,160 @@
++"""
++Pestaña de monitoreo de trabajos asíncronos.
++Permite ver el estado de los trabajos en la cola y su progreso.
++"""
++import streamlit as st
++from pathlib import Path
++
++from core.pipeline.job_queue import job_queue, JobStatus
++from core.repository.csv_repository import CSVNarrativeRepository
++
++
++def jobs_monitor_tab(username: str):
++    st.header("📊 Monitor de Trabajos")
++
++    # Obtener todos los trabajos del usuario
++    user_jobs = job_queue.get_user_jobs(username)
++
++    if not user_jobs:
++        st.info("No tienes trabajos en el sistema.")
++        return
++
++    # Estadísticas
++    col1, col2, col3, col4 = st.columns(4)
++
++    pending = sum(1 for j in user_jobs if j.status == JobStatus.PENDING)
++    processing = sum(1 for j in user_jobs if j.status == JobStatus.PROCESSING)
++    completed = sum(1 for j in user_jobs if j.status == JobStatus.COMPLETED)
++    failed = sum(1 for j in user_jobs if j.status == JobStatus.FAILED)
++
++    col1.metric("⏳ Pendientes", pending)
++    col2.metric("🔄 Procesando", processing)
++    col3.metric("✅ Completados", completed)
++    col4.metric("❌ Fallidos", failed)
++
++    # Botón para refrescar
++    if st.button("🔄 Refrescar", use_container_width=True):
++        st.rerun()
++
++    # Botón para limpiar completados/fallidos
++    if completed > 0 or failed > 0:
++        if st.button("🧹 Limpiar trabajos finalizados", use_container_width=True):
++            job_queue.clear_completed(username)
++            st.success("Trabajos limpiados")
++            st.rerun()
++
++    st.divider()
++
++    # Filtros
++    filter_status = st.multiselect(
++        "Filtrar por estado",
++        ["PENDING", "PROCESSING", "COMPLETED", "FAILED"],
++        default=["PENDING", "PROCESSING"]
++    )
++
++    # Ordenar por fecha de creación (más recientes primero)
++    user_jobs.sort(key=lambda j: j.created_at, reverse=True)
++
++    # Mostrar trabajos
++    for job in user_jobs:
++        if job.status.value.upper() not in filter_status:
++            continue
++
++        # Color según estado
++        if job.status == JobStatus.COMPLETED:
++            emoji = "✅"
++            color = "green"
++        elif job.status == JobStatus.FAILED:
++            emoji = "❌"
++            color = "red"
++        elif job.status == JobStatus.PROCESSING:
++            emoji = "🔄"
++            color = "blue"
++        else:
++            emoji = "⏳"
++            color = "orange"
++
++        with st.expander(f"{emoji} **{job.item.url[:60]}...** - {job.status.value.upper()}",
++                         expanded=(job.status == JobStatus.PROCESSING)):
++
++            col_a, col_b = st.columns(2)
++
++            with col_a:
++                st.write(f"**Job ID:** `{job.job_id}`")
++                st.write(f"**URL/Archivo:** {job.item.url}")
++                st.write(f"**Plataforma:** {job.item.platform.value if job.item.platform else 'N/A'}")
++                st.write(f"**Creado:** {job.created_at.strftime('%Y-%m-%d %H:%M:%S')}")
++
++            with col_b:
++                st.write(f"**Estado:** {job.status.value.upper()}")
++                if job.started_at:
++                    st.write(f"**Iniciado:** {job.started_at.strftime('%Y-%m-%d %H:%M:%S')}")
++                if job.completed_at:
++                    st.write(f"**Completado:** {job.completed_at.strftime('%Y-%m-%d %H:%M:%S')}")
++                    duration = (job.completed_at - job.started_at).total_seconds() if job.started_at else 0
++                    st.write(f"**Duración:** {duration:.1f}s")
++
++            # Información adicional del VideoNarrative
++            st.divider()
++            st.write("**Estado del Procesamiento:**")
++
++            # Cargar datos actuales del repositorio
++            repo = CSVNarrativeRepository(Path("data/narratives.csv"))
++            try:
++                current_item = repo.get(job.item.id)
++                if current_item:
++                    status_emoji = {
++                        "PENDING": "⏳",
++                        "DOWNLOADING": "⬇️",
++                        "UPLOADED": "☁️",
++                        "TRANSCRIBING": "🎙️",
++                        "TRANSCRIBED": "📝",
++                        "REWRITING": "✍️",
++                        "REWRITTEN": "📄",
++                        "GENERATING_DOC": "📋",
++                        "COMPLETED": "✅",
++                        "FAILED": "❌"
++                    }
++
++                    current_status = current_item.status.value.upper()
++                    st.write(f"{status_emoji.get(current_status, '❓')} **{current_status}**")
++
++                    if current_item.video_s3_url:
++                        st.write(f"📹 Video S3: `{current_item.video_s3_url[:80]}...`")
++
++                    if current_item.transcript_path:
++                        st.write(f"📝 Transcripción: `{current_item.transcript_path}`")
++
++                    if current_item.word_count:
++                        st.write(f"📊 Palabras: {current_item.word_count}")
++
++                    if current_item.document_path:
++                        st.write(f"📄 Documento: `{current_item.document_path}`")
++
++                        # Botón de descarga si existe el documento
++                        doc_path = Path(current_item.document_path)
++                        if doc_path.exists():
++                            with open(doc_path, "rb") as f:
++                                st.download_button(
++                                    label="📥 Descargar Documento",
++                                    data=f,
++                                    file_name=doc_path.name,
++                                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
++                                    key=f"download_{job.job_id}"
++                                )
++                else:
++                    st.warning("No se encontró información del item en el repositorio")
++
++            except Exception as e:
++                st.error(f"Error al cargar datos: {e}")
++
++            # Mostrar error si falló
++            if job.error_message:
++                st.error(f"**Error:** {job.error_message}")
++
++    # Auto-refresh cada 10 segundos si hay trabajos activos
++    if pending > 0 or processing > 0:
++        st.info("🔄 Esta página se refresca automáticamente cada 10 segundos")
++        import time
++        time.sleep(10)
++        st.rerun()
+Index: ui/main_app.py
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/ui/main_app.py b/ui/main_app.py
+--- a/ui/main_app.py	(revision 4b5259ffe4e176860a29deb512f5d791a58eb032)
++++ b/ui/main_app.py	(revision 61b238a2e02907a61e56ebefaf71ed860e89e9ce)
+@@ -5,6 +5,7 @@
+ from ui.components.explore_tab import explore_tab
+ from ui.components.image_creator import render_image_generator_tab
+ from ui.components.image_gallery_tab import render_image_gallery_tab
++from ui.components.jobs_monitor_tab import jobs_monitor_tab
+ 
+ 
+ st.set_page_config(page_title="Narrativas", layout="wide")
+@@ -17,12 +18,14 @@
+     st.stop()
+ 
+ 
+-tabs = st.tabs(["Generar Narrativas", "Explorar Narrativas", "Generar Imágenes", "Galería de Imágenes"])
++tabs = st.tabs(["Generar Narrativas", "📊 Monitor de Trabajos", "Explorar Narrativas", "Generar Imágenes", "Galería de Imágenes"])
+ with tabs[0]:
+     generate_tab(user)
+ with tabs[1]:
+-    explore_tab(user)
++    jobs_monitor_tab(user)
+ with tabs[2]:
+-    render_image_generator_tab(user)
++    explore_tab(user)
+ with tabs[3]:
++    render_image_generator_tab(user)
++with tabs[4]:
+     render_image_gallery_tab(user)
+diff --git a/docs/QUICK_START.md b/docs/QUICK_START.md
+new file mode 100644
+diff --git a/docs/USAGE_GUIDE.md b/docs/USAGE_GUIDE.md
+new file mode 100644
