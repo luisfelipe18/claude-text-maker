@@ -18,5 +18,7 @@ class VideoNarrative:
     video_s3_url: str | None = None
     transcript_path: Path | None = None
     document_path: Path | None = None
+    error_message: str | None = None  # Mensaje de error si el procesamiento falla
     created_at: datetime = field(default_factory=lambda: datetime.now(ZoneInfo("America/Lima")))
     completed_at: datetime | None = None
+

@@ -21,6 +21,7 @@ _DEF_FIELDS = [
     "video_s3_url",
     "transcript_path",
     "document_path",
+    "error_message",
     "created_at",
     "completed_at"
 ]
@@ -81,6 +82,7 @@ class CSVNarrativeRepository(RepositoryProtocol):
                         video_s3_url=r.get("video_s3_url") or None,
                         transcript_path=Path(r["transcript_path"]) if r.get("transcript_path") else None,
                         document_path=Path(r["document_path"]) if r.get("document_path") else None,
+                        error_message=r.get("error_message") or None,
                         created_at=datetime.fromisoformat(r["created_at"]) if r.get("created_at") else datetime.now(ZoneInfo("America/Lima")),
                         completed_at=datetime.fromisoformat(r["completed_at"]) if r.get("completed_at") else None,
                     )
@@ -102,6 +104,7 @@ class CSVNarrativeRepository(RepositoryProtocol):
                         video_s3_url=r.get("video_s3_url") or None,
                         transcript_path=Path(r["transcript_path"]) if r.get("transcript_path") else None,
                         document_path=Path(r["document_path"]) if r.get("document_path") else None,
+                        error_message=r.get("error_message") or None,
                         created_at=datetime.fromisoformat(r["created_at"]) if r.get("created_at") else datetime.now(ZoneInfo("America/Lima")),
                         completed_at=datetime.fromisoformat(r["completed_at"]) if r.get("completed_at") else None,
                     )

@@ -84,112 +84,187 @@ class NarrativeProcessor:
         return VideoNarrative(id=iid, user_id=user_id, url=pseudo_url, platform=platform, seq=seq)
 
     def process_one(self, item: VideoNarrative) -> VideoNarrative:
+        """Procesa un video completo con manejo de errores robusto por etapa."""
 
-        # 1) Download
-        item.status = ProcessingStatus.DOWNLOADING
-        self.repo.save(item)
-        vf = self.downloader.download(item.url, self.videos_dir)
-
-        # 2) Upload a S3
-        key = f"{self._s3_prefix}{vf.local_path.name}"
-        s3_uri = self.uploader.upload(vf.local_path, key)
-
-        # Limpieza local del video tras subir
         try:
-            vf.local_path.unlink()
+            # 1) Download
+            item.status = ProcessingStatus.DOWNLOADING
+            self.repo.save(item)
+
+            try:
+                vf = self.downloader.download(item.url, self.videos_dir)
+            except Exception as e:
+                item.status = ProcessingStatus.FAILED
+                item.error_message = f"Error en descarga: {str(e)}"
+                self.repo.update(item)
+                raise  # Re-lanzar para que JobQueue lo maneje
+
+            # 2) Upload a S3
+            try:
+                key = f"{self._s3_prefix}{vf.local_path.name}"
+                s3_uri = self.uploader.upload(vf.local_path, key)
+
+                # Limpieza local del video tras subir
+                try:
+                    vf.local_path.unlink()
+                except Exception as e:
+                    print(f"[WARN] No se pudo eliminar archivo local: {e}")
+
+                item.status = ProcessingStatus.UPLOADED
+                item.video_s3_url = s3_uri
+                self.repo.update(item)
+            except Exception as e:
+                item.status = ProcessingStatus.FAILED
+                item.error_message = f"Error subiendo a S3: {str(e)}"
+                self.repo.update(item)
+                raise
+
+            # 3) Transcribe
+            try:
+                item.status = ProcessingStatus.TRANSCRIBING
+                self.repo.update(item)
+                tr = self.transcriber.transcribe(item.video_s3_url, self.raw_txt_dir, job_name=f"job-{item.id}")
+                item.status = ProcessingStatus.TRANSCRIBED
+                item.transcript_path = tr.text_path
+                self.repo.update(item)
+            except Exception as e:
+                item.status = ProcessingStatus.FAILED
+                item.error_message = f"Error en transcripción: {str(e)}"
+                self.repo.update(item)
+                raise
+
+            # 4) Rewrite
+            try:
+                item.status = ProcessingStatus.REWRITING
+                self.repo.update(item)
+                rw = self.rewriter.rewrite(
+                    tr.text_path,
+                    self.rewritten_dir,
+                    self.rconf.min_words,
+                    self.rconf.max_words,
+                    self.rconf.max_retries
+                )
+                item.status = ProcessingStatus.REWRITTEN
+                item.word_count = rw.words_count
+                self.repo.update(item)
+            except Exception as e:
+                item.status = ProcessingStatus.FAILED
+                item.error_message = f"Error en reescritura: {str(e)}"
+                self.repo.update(item)
+                raise
+
+            # 5) Generate DOCX
+            try:
+                item.status = ProcessingStatus.GENERATING_DOC
+                self.repo.update(item)
+                doc = self.docgen.build(
+                    rw.json_path,
+                    self.words_dir,
+                    serial=item.seq
+                )
+                item.status = ProcessingStatus.COMPLETED
+                item.document_path = doc.docx_path
+                item.completed_at = datetime.now(ZoneInfo("America/Lima"))
+                self.repo.update(item)
+            except Exception as e:
+                item.status = ProcessingStatus.FAILED
+                item.error_message = f"Error generando documento: {str(e)}"
+                self.repo.update(item)
+                raise
+
+            return item
+
         except Exception as e:
-            print(e)
-            pass
-
-        item.status = ProcessingStatus.UPLOADED
-        item.video_s3_url = s3_uri
-        self.repo.update(item)
-
-        # Transcribe
-        item.status = ProcessingStatus.TRANSCRIBING
-        self.repo.update(item)
-        tr = self.transcriber.transcribe(item.video_s3_url, self.raw_txt_dir, job_name=f"job-{item.id}")
-        item.status = ProcessingStatus.TRANSCRIBED
-        item.transcript_path = tr.text_path
-        self.repo.update(item)
-
-        # Rewrite
-        item.status = ProcessingStatus.REWRITING
-        self.repo.update(item)
-        rw = self.rewriter.rewrite(
-            tr.text_path,
-            self.rewritten_dir,
-            self.rconf.min_words,
-            self.rconf.max_words,
-            self.rconf.max_retries
-        )
-        item.status = ProcessingStatus.REWRITTEN
-        item.word_count = rw.words_count
-        self.repo.update(item)
-
-        # DOCX
-        item.status = ProcessingStatus.GENERATING_DOC
-        self.repo.update(item)
-        doc = self.docgen.build(
-            rw.json_path,
-            self.words_dir,
-            serial=item.seq
-        )
-        item.status = ProcessingStatus.COMPLETED
-        item.document_path = doc.docx_path
-        item.completed_at = datetime.now(ZoneInfo("America/Lima"))
-
-        self.repo.update(item)
-        return item
+            # Error general - ya debería estar manejado arriba, pero por si acaso
+            if item.status != ProcessingStatus.FAILED:
+                item.status = ProcessingStatus.FAILED
+                item.error_message = f"Error inesperado: {str(e)}"
+                self.repo.update(item)
+            raise  # Re-lanzar para JobQueue
 
     def process_local_video(self, item: VideoNarrative, local_path: Path) -> VideoNarrative:
-        # Guardar registro
-        item.status = ProcessingStatus.DOWNLOADING
-        self.repo.save(item)
+        """Procesa un video local con manejo de errores robusto por etapa."""
 
-        # Subir a S3 con nombre seguro + sufijo único
-        safe_name = sanitize_filename(local_path.stem) or "video"
-        ext = local_path.suffix.lower() or ".mp4"
-        key = f"{self.pconf.s3_prefix}{safe_name}_{item.id}{ext}"
-        s3_uri = self.uploader.upload(local_path, key)
+        try:
+            # 1) Guardar registro inicial
+            item.status = ProcessingStatus.DOWNLOADING
+            self.repo.save(item)
 
+            # 2) Subir a S3 con nombre seguro + sufijo único
+            try:
+                safe_name = sanitize_filename(local_path.stem) or "video"
+                ext = local_path.suffix.lower() or ".mp4"
+                key = f"{self.pconf.s3_prefix}{safe_name}_{item.id}{ext}"
+                s3_uri = self.uploader.upload(local_path, key)
 
-        item.status = ProcessingStatus.UPLOADED
-        item.video_s3_url = s3_uri
-        self.repo.update(item)
+                item.status = ProcessingStatus.UPLOADED
+                item.video_s3_url = s3_uri
+                self.repo.update(item)
+            except Exception as e:
+                item.status = ProcessingStatus.FAILED
+                item.error_message = f"Error subiendo a S3: {str(e)}"
+                self.repo.update(item)
+                raise
 
-        # Transcribe
-        item.status = ProcessingStatus.TRANSCRIBING;
-        self.repo.update(item)
-        tr = self.transcriber.transcribe(s3_uri, self.raw_txt_dir, job_name=f"job-{item.id}")
-        item.status = ProcessingStatus.TRANSCRIBED;
-        item.transcript_path = tr.text_path;
-        self.repo.update(item)
+            # 3) Transcribe
+            try:
+                item.status = ProcessingStatus.TRANSCRIBING
+                self.repo.update(item)
+                tr = self.transcriber.transcribe(s3_uri, self.raw_txt_dir, job_name=f"job-{item.id}")
+                item.status = ProcessingStatus.TRANSCRIBED
+                item.transcript_path = tr.text_path
+                self.repo.update(item)
+            except Exception as e:
+                item.status = ProcessingStatus.FAILED
+                item.error_message = f"Error en transcripción: {str(e)}"
+                self.repo.update(item)
+                raise
 
-        # Rewriter
-        item.status = ProcessingStatus.REWRITING;
-        self.repo.update(item)
-        rw = self.rewriter.rewrite(
-            tr.text_path,
-            self.rewritten_dir,
-            self.rconf.min_words,
-            self.rconf.max_words,
-            self.rconf.max_retries
-        )
-        item.status = ProcessingStatus.REWRITTEN;
-        item.word_count = rw.words_count;
-        self.repo.update(item)
+            # 4) Rewriter
+            try:
+                item.status = ProcessingStatus.REWRITING
+                self.repo.update(item)
+                rw = self.rewriter.rewrite(
+                    tr.text_path,
+                    self.rewritten_dir,
+                    self.rconf.min_words,
+                    self.rconf.max_words,
+                    self.rconf.max_retries
+                )
+                item.status = ProcessingStatus.REWRITTEN
+                item.word_count = rw.words_count
+                self.repo.update(item)
+            except Exception as e:
+                item.status = ProcessingStatus.FAILED
+                item.error_message = f"Error en reescritura: {str(e)}"
+                self.repo.update(item)
+                raise
 
-        # DOCX
-        item.status = ProcessingStatus.GENERATING_DOC;
-        self.repo.update(item)
-        doc = self.docgen.build(
-            rw.json_path,
-            self.words_dir,
-            serial=item.seq
-        )
-        item.status = ProcessingStatus.COMPLETED;
-        item.document_path = doc.docx_path;
-        item.completed_at = datetime.now(ZoneInfo("America/Lima"))
-        self.repo.update(item)
-        return item
+            # 5) DOCX
+            try:
+                item.status = ProcessingStatus.GENERATING_DOC
+                self.repo.update(item)
+                doc = self.docgen.build(
+                    rw.json_path,
+                    self.words_dir,
+                    serial=item.seq
+                )
+                item.status = ProcessingStatus.COMPLETED
+                item.document_path = doc.docx_path
+                item.completed_at = datetime.now(ZoneInfo("America/Lima"))
+                self.repo.update(item)
+            except Exception as e:
+                item.status = ProcessingStatus.FAILED
+                item.error_message = f"Error generando documento: {str(e)}"
+                self.repo.update(item)
+                raise
+
+            return item
+
+        except Exception as e:
+            # Error general - ya debería estar manejado arriba, pero por si acaso
+            if item.status != ProcessingStatus.FAILED:
+                item.status = ProcessingStatus.FAILED
+                item.error_message = f"Error inesperado: {str(e)}"
+                self.repo.update(item)
+            raise  # Re-lanzar para JobQueue

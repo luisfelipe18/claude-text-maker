@@ -242,12 +242,16 @@ def explore_tab(username: str):
         seq = getattr(it, "seq", 0)
         seq_display = seq if seq and seq > 0 else "—"
 
+        # Palabras - siempre como string para evitar problemas de Arrow
+        word_count = getattr(it, "word_count", None)
+        palabras_str = str(word_count) if word_count else "—"
+
         rows.append({
             "ID": it.id,
-            "#": seq_display,
+            "#": str(seq_display),  # Como string
             "Plataforma": _platform_str(it.platform),
             "URL": getattr(it, "url", "")[:60] + "..." if len(getattr(it, "url", "")) > 60 else getattr(it, "url", ""),
-            "Palabras": getattr(it, "word_count", None) or "—",
+            "Palabras": palabras_str,  # Como string
             "Estado": _status_str(it.status),
             "Creado": fecha_str,
         })
@@ -323,6 +327,11 @@ def explore_tab(username: str):
                 extra_info += f" · {retry_info}"
             if problem_info:
                 extra_info += f"  \n{problem_info}"
+
+            # Agregar mensaje de error si existe
+            error_msg = getattr(it, "error_message", None)
+            if error_msg:
+                extra_info += f"  \n❌ **Error:** {error_msg}"
 
             cA.markdown(
                 f"{title}  \n"

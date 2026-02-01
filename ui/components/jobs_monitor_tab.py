@@ -130,6 +130,10 @@ def jobs_monitor_tab(username: str):
 
                         if current_item.document_path:
                             st.caption(f"📄 Documento generado")
+
+                        # Mostrar error si existe
+                        if current_item.error_message:
+                            st.error(f"**Error:** {current_item.error_message}")
                     else:
                         st.info("El trabajo aún no ha sido registrado en el sistema")
 
@@ -213,6 +217,10 @@ def jobs_monitor_tab(username: str):
 
                 # URL
                 st.write(f"**URL:** {narrative.url}")
+
+                # Mostrar error si existe
+                if narrative.error_message:
+                    st.error(f"**Error:** {narrative.error_message}")
 
                 # Botones de descarga
                 col_txt, col_doc = st.columns(2)
