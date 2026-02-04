@@ -7,6 +7,11 @@ import pandas as pd
 from boto3.session import Session
 
 from core.repository.csv_repository import CSVNarrativeRepository
+from core.pipeline.factory import ProcessorFactory
+from core.models.configs import ProcessingConfig, RewriteConfig
+from core.models.enums import ProcessingStatus
+from utils.exceptions import RewriteError
+from core.processors.document_generator import DefaultWordGenerator
 
 
 # ---------- Normalizadores seguros (Enum o str) ----------
@@ -90,6 +95,107 @@ def _get_app_start_date() -> dt.date:
     return dt.date.today() - dt.timedelta(days=30)
 
 
+# ---------- Retry Rewriting ----------
+def retry_rewriting(item, username: str, min_words: int, max_words: int, max_retries: int = 3) -> tuple[bool, str]:
+    """
+    Reintentar la reescritura de una narrativa.
+
+    Returns:
+        tuple[bool, str]: (success, message)
+    """
+    try:
+        # Verificar que existe el transcript
+        if not item.transcript_path or not Path(item.transcript_path).exists():
+            return False, "❌ No se encontró la transcripción para esta narrativa"
+
+        # Obtener configuraciones
+        run_dir = Path("runs") / username
+
+        pconf = ProcessingConfig(
+            run_dir=run_dir,
+            bucket=st.secrets.get("S3_BUCKET", "guiones"),
+            s3_prefix=st.secrets.get("S3_PREFIX", "videos/"),
+            region=st.secrets.get("AWS_REGION", "us-east-1"),
+            enable_aws=True,
+        )
+
+        prompt_template = st.session_state.get("prompt_template")
+        rconf = RewriteConfig(
+            model_name=st.secrets.get("OPENAI_MODEL", "gpt-5"),
+            min_words=min_words,
+            max_words=max_words,
+            language=st.session_state.get("lang", "ES"),
+            max_retries=max_retries,
+            prompt_template=prompt_template,
+        )
+
+        # Crear factory y rewriter
+        factory = ProcessorFactory(pconf, rconf)
+        rewriter = factory.build_rewriter()
+
+        # Preparar directorio de salida
+        rewritten_dir = run_dir / "textos" / "rewritten_json"
+        rewritten_dir.mkdir(parents=True, exist_ok=True)
+
+        # Actualizar status a REWRITING
+        repo = CSVNarrativeRepository(Path("data/narratives.csv"))
+        item.status = ProcessingStatus.REWRITING
+        item.error_message = None  # Limpiar mensaje de error previo
+        repo.update(item)
+
+        # Ejecutar rewrite
+        rw = rewriter.rewrite(
+            Path(item.transcript_path),
+            rewritten_dir,
+            min_words,
+            max_words,
+            max_retries
+        )
+
+        # Actualizar narrativa con resultado exitoso
+        item.status = ProcessingStatus.REWRITTEN
+        item.word_count = rw.words_count
+        repo.update(item)
+
+        # Generar documento Word
+        try:
+            docgen = DefaultWordGenerator()
+            words_dir = run_dir / "textos" / "words"
+            words_dir.mkdir(parents=True, exist_ok=True)
+
+            # Usar el número de secuencia de la narrativa
+            serial = item.seq if item.seq else 0
+
+            doc = docgen.build(rw.json_path, words_dir, serial)
+
+            # Actualizar narrativa con documento generado
+            item.document_path = doc.docx_path
+            item.status = ProcessingStatus.COMPLETED
+            repo.update(item)
+
+            return True, f"✅ Reescritura y documento completados: {rw.words_count} palabras generadas"
+
+        except Exception as e:
+            # Si falla la generación del documento, mantener REWRITTEN pero notificar
+            return True, f"✅ Reescritura exitosa ({rw.words_count} palabras), pero falló generar documento: {str(e)}"
+
+    except RewriteError as e:
+        # Error de reescritura (probablemente falta de créditos)
+        repo = CSVNarrativeRepository(Path("data/narratives.csv"))
+        item.status = ProcessingStatus.FAILED
+        item.error_message = f"Error en reescritura: {str(e)}"
+        repo.update(item)
+        return False, f"❌ Error en reescritura: {str(e)}"
+
+    except Exception as e:
+        # Error inesperado
+        repo = CSVNarrativeRepository(Path("data/narratives.csv"))
+        item.status = ProcessingStatus.FAILED
+        item.error_message = f"Error inesperado en reescritura: {str(e)}"
+        repo.update(item)
+        return False, f"❌ Error inesperado: {str(e)}"
+
+
 def explore_tab(username: str):
     st.header("Explorar Narrativas")
 
@@ -130,7 +236,6 @@ def explore_tab(username: str):
                     deleted_count = repo.delete_all_by_user(username)
                     st.success(f"✅ {deleted_count} narrativas eliminadas. La numeración se ha reiniciado.")
                     st.balloons()
-                    import time
                     time.sleep(2)
                     st.rerun()
                 else:
@@ -319,7 +424,7 @@ def explore_tab(username: str):
                 title = f"**Narración {seq_display}**"
 
             # Layout: Título + Info + Botones
-            cA, cB, cC, cD = st.columns([4, 1.2, 1.2, 1.2])
+            cA, cB, cC, cD, cE = st.columns([3, 1, 1, 1, 1.5])
 
             # Construir información adicional
             extra_info = ""
@@ -397,6 +502,61 @@ def explore_tab(username: str):
                     cD.caption("📘 N/D")
             else:
                 cD.caption("—")
+
+            # 🔄 Reintentar Reescritura (solo si hay transcripción disponible)
+            if tpath_raw and Path(str(tpath_raw)).exists():
+                # Mostrar opciones de reintento en un expander dentro de la columna E
+                with cE:
+                    with st.expander("🔄 Reescribir", expanded=False):
+                        # Opciones de longitud
+                        retry_mode = st.selectbox(
+                            "Longitud",
+                            ["TikTok (250 ±10)", "Facebook (530 ±10)", "Personalizado"],
+                            key=f"retry_mode_{item_id}",
+                            index=0
+                        )
+
+                        if retry_mode.startswith("TikTok"):
+                            retry_min, retry_max = 240, 260
+                        elif retry_mode.startswith("Facebook"):
+                            retry_min, retry_max = 520, 540
+                        else:
+                            retry_goal = st.number_input(
+                                "Objetivo",
+                                20, 2000, 250,
+                                key=f"retry_goal_{item_id}"
+                            )
+                            retry_margin = st.number_input(
+                                "Margen",
+                                0, 200, 10,
+                                key=f"retry_margin_{item_id}"
+                            )
+                            retry_min, retry_max = int(retry_goal - retry_margin), int(retry_goal + retry_margin)
+
+                        retry_attempts = st.number_input(
+                            "Reintentos",
+                            1, 5, 3,
+                            key=f"retry_attempts_{item_id}",
+                            help="Intentos si no se cumple la longitud"
+                        )
+
+                        if st.button("▶️ Iniciar", key=f"retry_btn_{item_id}", type="primary"):
+                            with st.spinner("Reescribiendo..."):
+                                success, message = retry_rewriting(
+                                    it,
+                                    username,
+                                    retry_min,
+                                    retry_max,
+                                    retry_attempts
+                                )
+
+                            if success:
+                                st.success(message)
+                                st.rerun()
+                            else:
+                                st.error(message)
+            else:
+                cE.caption("—")
 
             if btn_count == 0 and not s3_uri:
                 cB.caption("—")
